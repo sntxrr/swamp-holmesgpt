@@ -25,7 +25,7 @@ swamp extension pull @sntxrr/holmesgpt
 
 swamp behavior create @sntxrr/holmesgpt holmes \
   --global-arg baseUrl=http://holmes.example:5050 \
-  --global-arg "apiKey=\${{ vault.get('my-vault', 'holmes-api-key') }}"
+  --global-arg 'apiKey=${{ vault.get("my-vault", "holmes-api-key") }}'
 
 swamp behavior run holmes health
 swamp behavior run holmes ask \
@@ -86,7 +86,7 @@ data.latest("holmes", "nightly-backup").attributes.structured.needsHuman
   message says which.
 - **`health` proves nothing about `apiKey`.** The two endpoints it reads are
   unauthenticated. Only an `ask` proves the key.
-- **`health` fails the run when the server is not ready**, after storing the
-  state it saw.
+- **`health` fails the run when the server is not ready or cannot be
+  reached**, after storing the state it saw (`healthy: false`).
 
 Measured against HolmesGPT 0.46.0.

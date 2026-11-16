@@ -331,10 +331,60 @@ Deno.test("health records the state and then fails when not ready", async () => 
       ),
   );
 
-  assertStringIncludes(err.message, "/readyz 503");
+  assertStringIncludes(err.message, "/readyz HTTP 503");
   const written = getWrittenResources();
   assertEquals(written.length, 1);
   assertEquals(written[0].data.healthy, true);
   assertEquals(written[0].data.ready, false);
   assertEquals(written[0].data.models, []);
+});
+
+Deno.test("health records an unreachable server and then fails", async () => {
+  const { context, getWrittenResources } = healthContext();
+
+  const { result: err } = await withMockedFetch(
+    () => Promise.reject(new TypeError("connection refused")),
+    () =>
+      assertRejects(
+        () => model.methods.health.execute({}, context),
+        Error,
+      ),
+  );
+
+  assertStringIncludes(err.message, "HolmesGPT is not ready");
+  assertStringIncludes(err.message, "http://holmes.example:5050/healthz");
+  assertStringIncludes(err.message, "connection refused");
+  const written = getWrittenResources();
+  assertEquals(written.length, 1);
+  assertEquals(written[0].data.healthy, false);
+  assertEquals(written[0].data.ready, false);
+});
+
+Deno.test("ask names the server when it cannot be reached", async () => {
+  const { context, getWrittenResources } = askContext();
+
+  const { result: refused } = await withMockedFetch(
+    () => Promise.reject(new TypeError("connection refused")),
+    () =>
+      assertRejects(
+        () => model.methods.ask.execute(askArgs(), context),
+        Error,
+      ),
+  );
+  assertStringIncludes(
+    refused.message,
+    "HolmesGPT unreachable at http://holmes.example:5050/api/chat",
+  );
+  assertStringIncludes(refused.message, "connection refused");
+
+  const { result: timedOut } = await withMockedFetch(
+    () => Promise.reject(new DOMException("signal timed out", "TimeoutError")),
+    () =>
+      assertRejects(
+        () => model.methods.ask.execute(askArgs(), context),
+        Error,
+      ),
+  );
+  assertStringIncludes(timedOut.message, "no response within 5000ms");
+  assertEquals(getWrittenResources().length, 0);
 });

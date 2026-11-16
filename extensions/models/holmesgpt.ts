@@ -116,6 +116,30 @@ function buildHeaders(globalArgs: GlobalArgs): Record<string, string> {
 }
 
 /**
+ * `fetch`, with a failure that says which server could not be reached and
+ * why. A bare timeout or connection error names neither.
+ */
+async function request(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const timedOut = error instanceof DOMException &&
+      (error.name === "TimeoutError" || error.name === "AbortError");
+    const reason = timedOut
+      ? `no response within ${timeoutMs}ms`
+      : (error instanceof Error ? error.message : String(error));
+    throw new Error(`HolmesGPT unreachable at ${url}: ${reason}`);
+  }
+}
+
+/**
  * Pull FastAPI's `detail` out of an error body, as text, capped in length.
  * `detail` is a string for most errors and a list for a 422.
  */
@@ -250,14 +274,15 @@ export const model = {
         // have run tools by the time a request fails, so repeating it is the
         // caller's decision, not something to do behind its back.
         const started = Date.now();
-        const res = await fetch(endpoint(globalArgs, "/api/chat"), {
-          method: "POST",
-          headers: buildHeaders(globalArgs),
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(
-            globalArgs.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-          ),
-        });
+        const res = await request(
+          endpoint(globalArgs, "/api/chat"),
+          {
+            method: "POST",
+            headers: buildHeaders(globalArgs),
+            body: JSON.stringify(body),
+          },
+          globalArgs.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        );
         if (!res.ok) throw chatError(res.status, await res.text());
 
         const reply = await res.json() as Record<string, unknown>;
@@ -327,29 +352,45 @@ export const model = {
       ) => {
         const { globalArgs, logger } = context;
 
+        logger.info("Checking HolmesGPT health");
+
         // /healthz and /readyz are the two endpoints the server leaves
         // unauthenticated, so this proves reachability and nothing about
         // apiKey. An `ask` is what proves the key.
-        const healthRes = await fetch(endpoint(globalArgs, "/healthz"), {
-          signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-        });
-        const healthy = healthRes.ok;
-        await healthRes.body?.cancel();
+        //
+        // A server that cannot be reached is recorded the same way as one
+        // that answers "not ready": the state is written, then the run fails.
+        // What was observed is real data either way, and a workflow can read
+        // `healthy: false` instead of finding the last good record.
+        const probe = async (path: string) => {
+          try {
+            const res = await request(
+              endpoint(globalArgs, path),
+              {},
+              HEALTH_TIMEOUT_MS,
+            );
+            return { res, problem: res.ok ? "" : `HTTP ${res.status}` };
+          } catch (error) {
+            return { res: undefined, problem: (error as Error).message };
+          }
+        };
 
-        const readyRes = await fetch(endpoint(globalArgs, "/readyz"), {
-          signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-        });
-        const ready = readyRes.ok;
+        const health = await probe("/healthz");
+        await health.res?.body?.cancel();
+        const healthy = health.problem === "";
+
+        const readiness = await probe("/readyz");
+        const ready = readiness.problem === "";
         let models: string[] = [];
-        if (ready) {
-          const readiness = await readyRes.json() as { models?: unknown };
-          if (Array.isArray(readiness.models)) {
-            models = readiness.models.filter((m): m is string =>
+        if (ready && readiness.res) {
+          const parsed = await readiness.res.json() as { models?: unknown };
+          if (Array.isArray(parsed.models)) {
+            models = parsed.models.filter((m): m is string =>
               typeof m === "string"
             );
           }
         } else {
-          await readyRes.body?.cancel();
+          await readiness.res?.body?.cancel();
         }
 
         const handle = await context.writeResource("health", "current", {
@@ -361,7 +402,9 @@ export const model = {
 
         if (!healthy || !ready) {
           throw new Error(
-            `HolmesGPT is not ready: /healthz ${healthRes.status}, /readyz ${readyRes.status}`,
+            `HolmesGPT is not ready: /healthz ${
+              health.problem || "ok"
+            }, /readyz ${readiness.problem || "ok"}`,
           );
         }
         logger.info("HolmesGPT is ready with {count} models", {
