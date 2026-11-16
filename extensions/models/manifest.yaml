@@ -1,0 +1,20 @@
+manifestVersion: 1
+
+name: "@sntxrr/holmesgpt"
+version: "2026.11.16.1"
+description: "Ask a HolmesGPT SRE agent server to investigate a question and keep its answer as versioned data"
+repository: "https://github.com/sntxrr/swamp-holmesgpt"
+
+models:
+  - holmesgpt.ts
+
+additionalFiles:
+  - README.md
+  - LICENSE.md
+
+labels:
+  - holmesgpt
+  - sre
+  - llm
+  - ai
+  - incident-response
